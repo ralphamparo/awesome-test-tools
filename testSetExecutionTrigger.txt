@@ -1,0 +1,283 @@
+Const defaultColumnNumber = 1
+Const defaultFilePath = "C:\"
+Const defaultFileName = "TestSetExecutionTrigger.xlsm"
+Const invokeTestSetRunnerFileName = "invokeTestSetRunner.vbs"
+Const runAnyTestSetFileName = "runAnyTestSet.vbs"
+
+Sub OpenForm()
+    UserForm1.Show
+End Sub
+Sub triggerTestExecution()
+    
+    On Error Resume Next
+    Set oDict = CreateObject("Scripting.Dictionary")
+    Const PARAMETER_COLUMNINDEX = 1
+    Const VALUE_COLUMNINDEX = 2
+    Const PASS_COLUMNINDEX = 30
+
+    Dim qcServer
+    Dim qcDomain
+    Dim qcProject
+    Dim qcUser
+    Dim qcPassword
+    Dim testFolderPath
+    
+    'get ALM connection details to check the data
+       
+    Set oSheet = Excel.ActiveWorkbook.Sheets("ALMUserInputs")
+    For rowCtr = 1 To oSheet.UsedRange.Rows.Count + 1
+    
+    oSheet.Cells(rowCtr, VALUE_COLUMNINDEX) = Trim(oSheet.Cells(rowCtr, VALUE_COLUMNINDEX))
+    
+    parameterLabelValue = Trim(oSheet.Cells(rowCtr, PARAMETER_COLUMNINDEX))
+    parameterValue = Trim(oSheet.Cells(rowCtr, VALUE_COLUMNINDEX))
+    'get the parameter values from the TestSetExecutionTrigger.xlsm excel file
+        If StrComp(parameterLabelValue, "ALM Server URL", 1) = 0 Then
+        qcServer = parameterValue
+        'MsgBox qcServer
+        ElseIf StrComp(parameterLabelValue, "ALM Domain Name", 1) = 0 Then
+        qcDomain = parameterValue
+        'MsgBox qcDomain
+        ElseIf StrComp(parameterLabelValue, "ALM Project Name", 1) = 0 Then
+        qcProject = parameterValue
+        'MsgBox qcProject
+        ElseIf StrComp(parameterLabelValue, "ALM User ID", 1) = 0 Then
+        qcUser = parameterValue
+        'MsgBox qcUser
+        ElseIf StrComp(parameterLabelValue, "ALM Password", 1) = 0 Then
+        qcPassword = parameterValue
+       ' MsgBox qcPassword
+        ElseIf StrComp(parameterLabelValue, "Test Lab Folder Path", 1) = 0 Then
+            If Right(parameterLabelValue, 1) = "\" Then
+            oSheet.Cells(rowCtr, VALUE_COLUMNINDEX) = Left(oSheet.Cells(rowCtr, VALUE_COLUMNINDEX), Len(oSheet.Cells(rowCtr, VALUE_COLUMNINDEX - 1)))
+            testFolderPath = oSheet.Cells(rowCtr, VALUE_COLUMNINDEX)
+            Else
+            testFolderPath = parameterValue
+            End If
+        
+        'MsgBox testFolderPath
+        ElseIf InStr(1, parameterLabelValue, "Test Set", 1) > 0 And parameterValue <> "" Then ' add the test set names to the oDict Items array
+        oDict.Add parameterValue, rowCtr
+        End If
+    Next
+    qcPassword = UserForm1.qcPassword_textbox.Value
+    'oSheet.Cells(1, PASS_COLUMNINDEX) = qcPassword
+    testSetNameArray = oDict.Keys 'create the testSetName Array retrieved in the testSetExecutionTrigger.xlsm excel file
+    'Save the Workbook
+    Excel.ActiveWorkbook.Save
+    'check if all the Test set names and ALM connection details are correct
+    'tdc is the global TDConnection object.
+    Set otdc = CreateObject("tdapiole80.tdconnection") ' set otdc object
+    'initialize connection to the server
+    otdc.InitConnectionEx qcServer
+    'if the server inputted was not found prompt and error message
+    If Not otdc.Connected Then
+        UserForm1.Hide
+        MsgBox qcServer & " server was not found. Please try again"
+        Exit Sub
+    End If
+    'login to ALM/QC
+    otdc.Login qcUser, qcPassword
+    'if the user was not logged in prompt an error message
+    If Not otdc.Loggedin Then
+        MsgBox "Invalid username or password. Please try again"
+        Exit Sub
+    End If
+    'initialize search flag
+    blnProjectNameFound = False
+    blnDomainNameFound = False
+    
+    For projectCtr = 1 To otdc.GetAllVisibleProjectDescriptors.Count
+        'get project names and domain names for the user for input validation
+        projectName = otdc.GetAllVisibleProjectDescriptors.Item(projectCtr).Name
+        DomainName = otdc.GetAllVisibleProjectDescriptors.Item(projectCtr).DomainName
+        
+        'add the domain if it's not yet added to the domain list
+        If InStr(1, domainNameList, DomainName, 1) <= 0 Then
+        domainNameList = domainNameList & vbNewLine & DomainName
+        End If
+        'add the project name if it's not yet added to the project name list
+        If InStr(1, projectNameList, projectName, 1) <= 0 Then
+        projectNameList = projectNameList & vbNewLine & projectName
+        End If
+        'if project is found, set found flag to true
+        If StrComp(qcProject, Trim(projectName), vbTextCompare) = 0 Then
+           blnProjectNameFound = True
+        End If
+        'if domain is found, set found flag to true
+        If StrComp(qcDomain, Trim(DomainName), vbTextCompare) = 0 Then
+            blnDomainNameFound = True
+        End If
+        'if both the project and domain value is found, exit the validation
+        If blnProjectNameFound = True And blnDomainNameFound = True Then
+            Exit For
+        End If
+    Next
+    'connect if both the project and domain is found, else prompt an error message
+    If blnProjectNameFound = True And blnDomainNameFound = True Then
+    otdc.Connect qcDomain, qcProject
+    Else
+        If blnDomainNameFound = False Then
+        UserForm1.Hide
+        MsgBox "Only the ff domains are applicable for " & qcUser & " in " & qcServer & ":" & vbNewLine & domainNameList & vbNewLine & vbNewLine & "Please try again."
+        Exit Sub
+        ElseIf blnDomainNameFound = True And blnProjectNameFound = False Then
+        UserForm1.Hide
+        MsgBox "Only the ff projects are applicable for " & qcUser & " in the  " & qcDomain & ":" & vbNewLine & projectNameList & vbNewLine & vbNewLine & "Please try again."
+        End If
+        Exit Sub
+    End If
+    'join test set name values
+    testSetNames = Join(testSetNameArray, vbNewLine)
+    
+    'Get the test set tree manager from the test set factory
+    Set TSetFact = otdc.TestSetFactory
+    Set tsTreeMgr = otdc.TestSetTreeManager
+    
+' Get the test set folder passed as an argument to the example code
+'nPath = "Root \ " & Trim(tsFolderName)
+    nPath = Trim(testFolderPath)
+    Set tsFolder = tsTreeMgr.NodeByPath(nPath)
+    If tsFolder Is Nothing Then
+        UserForm1.Hide
+        MsgBox "Could not find folder " & nPath
+        Exit Sub
+    End If
+    
+    confirmExecution = MsgBox("Are you sure you want to run all the test scripts in the following test sets located in " & testFolderPath & " folder?" & vbNewLine & vbNewLine & testSetNames, vbYesNo)
+    
+    If confirmExecution = vbYes Then
+' Search for the test set passed as an argument to the example code
+    For arrIndex = 0 To UBound(testSetNameArray)
+    
+    tSetName = testSetNameArray(arrIndex)
+    Set tsList = tsFolder.FindTestSets(tSetName)
+'error handling for invalid test set names
+    If tsList Is Nothing Then
+        UserForm1.Hide
+        MsgBox "Could not find any test set named '" & tSetName & "' in the " & nPath
+        Exit Sub
+    End If
+'error handling for multiple test names being set
+    If tsList.Count > 1 Then
+        UserForm1.Hide
+        MsgBox "FindTestSets found more than one test set named: " & tSetName & " - Please refine search criteria."
+        Exit Sub
+    ElseIf tsList.Count < 1 Then
+        UserForm1.Hide
+        MsgBox "FindTestSets: test set " & tSetName & " not found"
+        Exit Sub
+    End If
+    Next
+    
+     'create a temporary text file contains all the ALM details
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Dim objVBSFile As Object
+    'create the vbs file
+    almDetailsFilePath = Excel.ActiveWorkbook.Path & "\" & "ALMDetails.txt"
+    Set objVBSFile = fso.CreateTextFile(almDetailsFilePath, True)
+    'close the file after creating it
+    objVBSFile.Close
+    'open the file for writing purposes
+    Set openVbsFile = fso.OpenTextFile(almDetailsFilePath, ForWriting, True)
+    openVbsFile.WriteLine ("ALM Server URL=" & qcServer)
+    openVbsFile.WriteLine ("ALM Domain Name=" & qcDomain)
+    openVbsFile.WriteLine ("ALM Project Name=" & qcProject)
+    openVbsFile.WriteLine ("ALM User ID=" & qcUser)
+    openVbsFile.WriteLine ("ALM Password=" & qcPassword)
+    openVbsFile.WriteLine ("Test Lab Folder Path=" & testFolderPath)
+    For arrIndex = 0 To UBound(testSetNameArray)
+    tSetName = testSetNameArray(arrIndex)
+    openVbsFile.WriteLine ("Test Set " & arrIndex + 1 & "=" & tSetName)
+    Next
+    openVbsFile.Close
+    'create the invokeTestSetRunner and the runAnyTestSet.vbs files
+    
+    invokeTestRunnerFilePath = Excel.ActiveWorkbook.Path & "\" & invokeTestSetRunnerFileName
+    invokeTestRunnerCreateFile = createVbsFiles(invokeTestRunnerFilePath, "invokeTestSetRunner-Code")
+    
+    runAnyTestSetFilePath = Excel.ActiveWorkbook.Path & "\" & runAnyTestSetFileName
+    runAnyTestSetCreateFile = createVbsFiles(runAnyTestSetFilePath, "runAnyTestSet-Code")
+    killALMPRocesses
+    oShellCommand = "cscript.exe " & invokeTestRunnerFilePath
+    'trigger the invokeTestSetRunner.vbs,to run the pack
+    oShell = Shell(oShellCommand, vbNormalFocus)
+    oSheet.Select
+    'disconnect from ALM
+    otdc.Disconnect
+    otdc.Logout
+    otdc.ReleaseConnection
+    
+    'destroy objects
+    Set otdc = Nothing
+    Set TSetFact = Nothing
+    Set tsTreeMgr = Nothing
+    Set tsFolder = Nothing
+    Set tsList = Nothing
+    'save the workbook close it
+    UserForm1.Hide
+    Excel.ActiveWorkbook.Save
+    Excel.Application.Quit
+    
+    End If
+End Sub
+
+Function createVbsFiles(filePath, sheetName)
+    On Error Resume Next
+    almDetailsFilePath = Excel.ActiveWorkbook.Path & "\" & "ALMDetails.txt"
+    almTxtFilePath = "Const sourceAlmDetailsPath=" & Chr(34) & almDetailsFilePath & Chr(34)
+    Set objCodeSheet = Excel.ActiveWorkbook.Worksheets(sheetName)
+    'select the range of cells to be deleted for formatting purposes
+    Excel.ActiveWorkbook.Sheets(sheetName).Activate
+    Excel.ActiveWorkbook.Range("A:Z").Select
+    'delete blank cells then shift columns to the left
+    Selection.SpecialCells(xlBlanks).Delete shift:=xlToLeft
+    'create fso Objects
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Dim objVBSFile As Object
+        'create the vbs file
+        Set objVBSFile = fso.CreateTextFile(filePath, True)
+        'close the file after creating it
+        objVBSFile.Close
+        'open the file for writing purposes
+        Set openVbsFile = fso.OpenTextFile(filePath, ForWriting, True)
+        openVbsFile.WriteLine (almTxtFilePath)
+            'get the code from the sheet specified
+            RowCount = objCodeSheet.UsedRange.Rows.Count
+            'get each line of code from the code sheet specified
+            For rowCtr = 1 To RowCount
+                codeLine = objCodeSheet.Cells(rowCtr, defaultColumnNumber)
+                If InStr(1, codeLine, defaultFilePath, vbTextCompare) > 0 Then
+                    codeLine = Replace(codeLine, defaultFilePath, Excel.ActiveWorkbook.Path, 1, -1, vbTextCompare)
+                End If
+                If InStr(1, codeLine, defaultFileName, vbTextCompare) > 0 Then
+                    codeLine = Replace(codeLine, defaultFileName, Excel.ActiveWorkbook.Name, 1, -1, vbTextCompare)
+                End If
+
+                openVbsFile.WriteLine (codeLine)
+            Next
+    
+End Function
+
+'kill all processes that are related to ALM and QTP
+Sub killALMPRocesses()
+On Error Resume Next
+Dim objWMIService, objProcess, colProcess
+Dim strComputer, strProcessKill
+strComputer = "."
+
+strProcessArray = Array("'bp_exec_agent.exe'", "'wexectrl.exe'", "'QTPro.exe'", "'AQTRmtAgent.exe'", "'cscript.exe'")
+'strProcessKill = "'calc.exe'"
+
+For processIndex = 0 To UBound(strProcessArray)
+'TerminateEXE(strProcessArray(processIndex))
+Set objWMIService = GetObject("winmgmts:" & "{impersonationLevel=impersonate}!\\" & strComputer & "\root\cimv2")
+Set colProcess = objWMIService.ExecQuery("Select * from Win32_Process Where Name = " & strProcessArray(processIndex))
+For Each objProcess In colProcess
+    objProcess.Terminate
+Next
+Next
+
+End Sub
