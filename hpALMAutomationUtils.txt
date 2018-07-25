@@ -1,0 +1,386 @@
+
+'Author: Ralph Lawrence Amparo
+'Function Name : loginToHPALM
+
+'Parameters:
+'   a) qcUsername
+'   b) qcPassword
+'   c) qcServer
+'   d) qcDomain
+'   e) qcProject
+
+'Description: login in to HP ALM using OTA library
+
+Function loginToHPALM(qcUsername, qcPassword, qcServer, qcDomain, qcProject)
+    Set tdc = CreateObject("TDApiOle80.TDConnection")
+
+    'qcServer = "URL" ' QC URL
+    tdc.InitConnectionEx qcServer
+     
+    'qcUsername = "Your Username" 'Username
+    'qcPassword = "Your Password"   'Password
+    tdc.Login qcUsername, qcPassword
+     
+    'qcDomain = "Domain" 'QC Domain Name
+    'qcProject = "Project" 'QC Project Name
+     
+    tdc.Connect qcDomain, qcProject
+    
+    On Error Resume Next
+    loginToHPALM = tdc
+End Function
+
+'Author: Ralph Lawrence Amparo
+'Function Name : uploadTestResultsToALM
+
+'Parameters:
+'   a) qcUsername
+'   b) qcPassword
+'   c) qcServer
+'   d) qcDomain
+'   e) qcProject
+'   f) qcTestSetFolder
+'   g) testConditionRepositoryFolder
+'   h) qcTestScriptName
+'   i) overallExecutionStatus
+
+'Description: login in to HP ALM using OTA library
+
+Function uploadTestResultsToALM(qcUsername, qcPassword, qcServer, qcDomain, qcProject, qcTestSetFolder, testConditionRepositoryFolder, qcTestScriptName, overallExecutionStatus)
+
+'Dim tdc, qcServer
+'Dim qcUsername, qcPassword, qcDomain, qcProject
+'Dim qcTestSetFolder, oTestSet, oTest, oRunInstance, oRun, oStep, oStepDetails
+Const defaultAutomatedTestCasesFolderPath = "Subject\01_Umsetzung\IL_MIT\Automated Test Cases\"
+
+Set tdc = CreateObject("TDApiOle80.TDConnection")
+
+'qcServer = "URL" ' QC URL
+tdc.InitConnectionEx qcServer
+ 
+'qcUsername = "Your Username" 'Username
+'qcPassword = "Your Password"   'Password
+tdc.Login qcUsername, qcPassword
+ 
+'qcDomain = "Domain" 'QC Domain Name
+'qcProject = "Project" 'QC Project Name
+ 
+tdc.Connect qcDomain, qcProject
+ 
+'qcTestSetFolder = "Root\03_IL_MIT\Package 3\" 'Path to the folder contains test sets, include the name
+qcTestSetName = "Automated Tests"
+
+' set the Test Set TreeManager object for mapping
+Set objTestTreeManager = tdc.TestSetTreeManager
+' create a new Test Set for each day
+' NOTE: di ko pa lam kung pano to gawin, isusunod ko nalang, once na matapos na yung buong function code
+Set objTestSetFolder = objTestTreeManager.NodeByPath(qcTestSetFolder)
+
+'Set objTestSet = objTestSetFolder.FindTestSets(qcTestSetName)
+
+Set objTestSetFactory = objTestSetFolder.TestSetFactory
+
+qcTestSetName = "TestAutomation_" & Format(Now() - 3, "MM-DD-YYYY") & Format(Now(), "HH:MM:SS.000")
+
+Set objNewTestSet = objTestSetFolder.FindTestSets(qcTestSetName)
+
+'if the test set for today's automated tests is not yet existing, create one
+If objNewTestSet Is Nothing Then
+    
+'Set objTestSet = objTestSetFolder.FindTestSets(qcTestSetName)
+
+Set objNewTestSet = objTestSetFactory.AddItem(Null)
+objNewTestSet.Name = qcTestSetName
+objNewTestSet.Post
+End If
+
+'get the test set count for the iteration
+testSetCount = tdc.TestSetTreeManager.NodeByPath(qcTestSetFolder).TestSetFactory.NewList("").Count
+
+'create
+For testSetCtr = 1 To testSetCount
+    Set objNewTestSet = tdc.TestSetTreeManager.NodeByPath(qcTestSetFolder).TestSetFactory.NewList("").Item(testSetCtr)
+    
+    If StrComp(objNewTestSet.Name, qcTestSetName) = 0 Then
+        Set objNewTestSet = objNewTestSet.TSTestFactory
+        Exit For
+    End If
+Next
+
+'validate if the test case is existing in the HP QC Test Lab
+Set myTestFact = tdc.TestFactory
+Set myTestFilter = myTestFact.Filter
+' build filter regarding the last known folder'
+myTestFilter.Filter("TS_NAME") = "'" & qcTestScriptName & "'"
+'testCaseID = myTestFilter.Filter("TS_NAME")
+Set myTestList = myTestFact.NewList(myTestFilter.Text)
+testCaseCount = myTestList.Count
+
+blnTestCaseIsExisting = False
+'if the test case is existing, retrieve it's test id for the the test lab mapping
+If testCaseCount > 0 Then
+    testCaseID = myTestList.Item(1).Field("TS_TEST_ID")
+    blnTestCaseIsExisting = True
+End If
+
+'check if the current Test Case executed is already existing in the Test Lab.
+'If yes, directly add it in the Test Lab. Else, create the test case first, before adding it in the Test Lab
+If Not blnTestCaseIsExisting Then
+    
+    Set testPlanTreeMgr = tdc.TreeManager
+    Set testPlanAutomatedTestCasesFolder = testPlanTreeMgr.NodeByPath(defaultAutomatedTestCasesFolderPath)
+    
+    Set oTest = testPlanAutomatedTestCasesFolder.TestFactory.AddItem(Null)
+    
+    'set mandatory Test Script Parameters - Test Script Name,
+    'Test Status, Creation Date , Priority , Test Type, Type, Coria Id, Upload Marker
+    
+    oTest.Name = qcTestScriptName
+    
+    oTest.Field("TS_STATUS") = "Review"
+    oTest.Field("TS_CREATION_DATE") = Format(Now(), "DD/MM/YYYY")
+    
+    oTest.Field("TS_USER_05") = "1-High" ' Priority
+    oTest.Field("TS_USER_07") = "04_Interface_Testing" ' Test Type
+    oTest.Field("TS_TYPE") = "MANUAL"
+    oTest.Field("TS_USER_13") = "undefined" ' Coria Id
+    oTest.Field("TS_USER_18") = "Upload before Review" ' Upload Marker
+    
+    oTest.Post ' add the test case in HP QC
+    
+    testCaseID = oTest.ID ' retrieve the Test Case Id, for mapping in the Test Lab
+End If
+
+'add the Test Case in the Test Case, once it was found
+Set oTest = objNewTestSet.AddItem(testCaseID)
+
+'add Test Steps in the Test Set
+ 
+'Creating a Run instance in HP ALM
+Set oRunInstance = oTest.RunFactory
+Set oRun = oRunInstance.AddItem("Automated") 'Run Name
+     
+oRun.Status = overallExecutionStatus 'Run Status
+oRun.Post
+oRun.Refresh
+    
+'start of for loop in adding the HP ALM Step List
+
+Set oStep = oRun.StepFactory
+oStep.AddItem ("Sample Step") 'Creating Step
+Set oStepDetails = oStep.NewList("")
+oStepDetails.Item(1).Field("ST_STATUS") = "PASSED" 'Updating Step Status
+oStepDetails.Item(1).Field("ST_DESCRIPTION") = "Test Desc" 'Updating Step Description
+oStepDetails.Item(1).Field("ST_EXPECTED") = "Test Expected" 'Updating Expected
+oStepDetails.Item(1).Field("ST_ACTUAL") = "Test Actual" 'Updating Actual
+oStepDetails.Post
+'end of for loop in adding the HP ALM Step List
+
+Do Until testName <> Trim(Worksheet.Cells(s, tcNameCol))
+    Set DSFactory = objTest.DesignStepFactory
+    Set dsTest = DSFactory.AddItem(Null)
+    dsTest.Field("DS_STEP_NAME") = Trim(Worksheet.Cells(s, eventCol)) + "_" + Trim(Worksheet.Cells(s, cycleCol)) + "_" + Trim(Worksheet.Cells(s, eventCodeCol))
+    dsTest.Field("DS_DESCRIPTION") = Trim(Worksheet.Cells(s, taskDescCol))
+    dsTest.Field("DS_EXPECTED") = Trim(Worksheet.Cells(s, expResCol))
+    dsTest.Field("DS_USER_TEMPLATE_01") = "Validation"
+    dsTest.Post
+    'Use this to populate the test id in the events spreadsheet
+    Worksheet.Cells(s, tcNumCol).Value = objTest.Field("TS_TEST_ID")
+    s = s + 1
+Loop
+    
+'end for loop here
+    
+    Set oStep = Nothing
+    Set oStepDetails = Nothing
+    Set oRun = Nothing
+    Set oRunInstance = Nothing
+    Set oTest = Nothing
+    Set oTestSet = Nothing
+    Set tdc = Nothing
+
+End Function
+Function uploadTestResultsToALM(qcTestSetFolder, qcTestSetName, testConditionRepositoryFolder, qcTestScriptName, overallExecutionStatus, defaultAutomatedTestCasesPath, lastItemIndex, objNewTestSet)
+    
+'validate if the test case is existing in the HP QC Test Lab
+Set myTestFact = tdc.TestFactory
+Set myTestFilter = myTestFact.Filter
+' build filter regarding the last known folder'
+myTestFilter.Filter("TS_NAME") = "'" & qcTestScriptName & "'"
+'testCaseID = myTestFilter.Filter("TS_NAME")
+Set myTestList = myTestFact.NewList(myTestFilter.Text)
+testCaseCount = myTestList.Count
+
+blnTestCaseIsExisting = False
+'if the test case is existing, retrieve it's test id for the the test lab mapping
+If testCaseCount > 0 Then
+    testCaseID = myTestList.Item(1).Field("TS_TEST_ID")
+    blnTestCaseIsExisting = True
+End If
+
+'check if the current Test Case executed is already existing in the Test Lab.
+'If yes, directly add it in the Test Lab. Else, create the test case first, before adding it in the Test Lab
+If Not blnTestCaseIsExisting Then
+    
+    Set testPlanTreeMgr = tdc.TreeManager
+    Set testPlanAutomatedTestCasesFolder = testPlanTreeMgr.NodeByPath(defaultAutomatedTestCasesPath)
+    
+    Set oTest = testPlanAutomatedTestCasesFolder.TestFactory.AddItem(Null)
+    
+    'set mandatory Test Script Parameters - Test Script Name, Test Status, Creation Date , Priority , Test Type, Type, Coria Id, Upload Marker
+    oTest.Name = qcTestScriptName
+    oTest.Field("TS_STATUS") = "Review"
+    oTest.Field("TS_CREATION_DATE") = Format(Now(), "DD/MM/YYYY")
+    oTest.Field("TS_USER_05") = "1-High" ' Priority
+    oTest.Field("TS_USER_07") = "04_Interface_Testing" ' Test Type
+    oTest.Field("TS_TYPE") = "MANUAL"
+    oTest.Field("TS_USER_13") = "undefined" ' Coria Id
+    oTest.Field("TS_USER_18") = "Upload before Review" ' Upload Marker
+    
+    oTest.Post ' add the test case in HP QC
+    
+    testCaseID = oTest.ID ' retrieve the Test Case Id, for mapping in the Test Lab
+End If
+
+'add the Test Case in the Test Set, once it was found
+Set oTest = objNewTestSet.AddItem(testCaseID)
+
+'add Test Steps in the Test Set
+ 
+'Creating a Run instance in HP ALM
+Set oRunInstance = oTest.RunFactory
+Set oRun = oRunInstance.AddItem("Automated") 'Run Name
+
+If StrComp(overallExecutionStatus, "PASSED", vbTextCompare) = 0 Then
+    overallExecutionStatus = "Passed"
+ElseIf StrComp(overallExecutionStatus, "FAILED", vbTextCompare) = 0 And InStr(1, qcTestScriptName, "Negative", 1) > 0 Then
+    overallExecutionStatus = "Passed"
+Else
+    overallExecutionStatus = "Failed"
+     'overallExecutionStatus = "Passed"
+End If
+        
+oRun.Status = overallExecutionStatus 'update the overall execution status of the test instance
+oRun.Post
+'oRun.Refresh
+    
+'start of for loop in adding the HP ALM Step List
+
+    'retrieve the ModuleTestEvidenceGeneration Sheet Column Index values
+    'lastItemIndex = retrieveLargestTestExecutionParameterItemCount()
+    
+    For paramCtr = 0 To lastItemIndex - 1
+        'populate the Step Name, Step Description, Expected Result,Actual Result,Test Validation Status
+        Set oStep = oRun.StepFactory
+        oStep.AddItem (strStepNameList.Items()(paramCtr)) 'Creating Step
+        'oStep.AddItem (objTestEvidenceGenerationSheet.Cells(paramCtr + 2, stepNameHeaderColumnIndex)) 'Creating Step
+        
+        If StrComp(strStepValidationResultsList.Items()(paramCtr), "PASSED", vbTextCompare) = 0 Then
+            testStepValidationStatus = "Passed"
+        Else
+            'testStepValidationStatus = "Passed"
+            testStepValidationStatus = "Failed"
+        End If
+        Set oStepDetails = oStep.NewList("")
+        oStepDetails.Item(paramCtr + 1).Field("ST_STEP_NAME") = strStepNameList.Items()(paramCtr) 'Updating Step Status
+        oStepDetails.Item(paramCtr + 1).Field("ST_STATUS") = testStepValidationStatus 'Updating Step Status
+        oStepDetails.Item(paramCtr + 1).Field("ST_DESCRIPTION") = strStepDescriptionList.Items()(paramCtr) 'Updating Step Description
+        oStepDetails.Item(paramCtr + 1).Field("ST_EXPECTED") = strStepExpectedResultList.Items()(paramCtr) 'Updating Expected
+        oStepDetails.Item(paramCtr + 1).Field("ST_ACTUAL") = strStepActualResultsList.Items()(paramCtr) 'Updating Actual
+        
+        'objTestEvidenceGenerationSheet.Cells(intTestEvidenceSheetLastRow, stepNameHeaderColumnIndex) = strStepNameList.Items()(paramCtr)
+        'objTestEvidenceGenerationSheet.Cells(intTestEvidenceSheetLastRow, stepDescriptionHeaderColumnIndex) = strStepDescriptionList.Items()(paramCtr)
+        'objTestEvidenceGenerationSheet.Cells(intTestEvidenceSheetLastRow, stepExpectedResultHeaderColumnIndex) = strStepExpectedResultList.Items()(paramCtr)
+        'objTestEvidenceGenerationSheet.Cells(intTestEvidenceSheetLastRow, stepActualResultHeaderColumnIndex) = strStepActualResultsList.Items()(paramCtr)
+        'objTestEvidenceGenerationSheet.Cells(intTestEvidenceSheetLastRow, stepTestValidationStatusHeaderColumnIndex) = strStepValidationResultsList.Items()(paramCtr)
+        
+        'oStepDetails.Item(paramCtr + 1).Field("ST_STEP_NAME") = objTestEvidenceGenerationSheet.Cells(paramCtr + 2, stepNameHeaderColumnIndex) 'Updating Step Status
+        'oStepDetails.Item(paramCtr + 1).Field("ST_STATUS") = objTestEvidenceGenerationSheet.Cells(paramCtr + 2, stepTestValidationStatusHeaderColumnIndex) 'Updating Step Status
+        'oStepDetails.Item(paramCtr + 1).Field("ST_DESCRIPTION") = objTestEvidenceGenerationSheet.Cells(paramCtr + 2, stepDescriptionHeaderColumnIndex) 'Updating Step Description
+        'oStepDetails.Item(paramCtr + 1).Field("ST_EXPECTED") = objTestEvidenceGenerationSheet.Cells(paramCtr + 2, stepExpectedResultHeaderColumnIndex) 'Updating Expected
+        'oStepDetails.Item(paramCtr + 1).Field("ST_ACTUAL") = objTestEvidenceGenerationSheet.Cells(paramCtr + 2, stepActualResultHeaderColumnIndex) 'Updating Actual
+        oStepDetails.Post
+    Next
+    'end of for loop in adding the HP ALM Step List and its Test Results
+
+    'Add attachments to the current run instance in HP ALM
+    'Set objFSO = CreateObject("Scripting.FileSystemObject")
+    Set objFile = objFSO.GetFolder(testConditionRepositoryFolder)
+    Set objFiles = objFile.Files
+    
+    For Each objFile In objFiles
+        Set AFactory = oRun.Attachments
+        Set itemToAdd = AFactory.AddItem(Null)
+    
+        strFileName = objFile.Name
+        
+        itemToAdd.Filename = testConditionRepositoryFolder & strFileName
+        'itemToAdd.Description = strFileName
+        itemToAdd.Type = 1
+        itemToAdd.Post
+        'itemToAdd.Save False
+    Next
+
+'disconnect from HP ALM
+'tdc.Disconnect
+'tdc.Logout
+'tdc.ReleaseConnection
+
+Set oStep = Nothing
+Set oStepDetails = Nothing
+Set oRun = Nothing
+Set oRunInstance = Nothing
+Set objTestTreeManager = Nothing
+Set objTestSetFolder = Nothing
+Set objTestSetFactory = Nothing
+'Set objNewTestSet = Nothing
+Set oTest = Nothing
+Set oTestSet = Nothing
+'Set objFSO = Nothing
+Set objFile = Nothing
+Set objFiles = Nothing
+Set AFactory = Nothing
+Set itemToAdd = Nothing
+'Set tdc = Nothing
+
+End Function
+
+Function createModuleTestSetInHPALM(qcTestSetFolder, qcTestSetName)
+     ' set the Test Set TreeManager object for mapping
+    Set objTestTreeManager = tdc.TestSetTreeManager
+    ' create a new Test Set for each day
+    
+    Set objTestSetFolder = objTestTreeManager.NodeByPath(qcTestSetFolder)
+    
+    'Set objTestSet = objTestSetFolder.FindTestSets(qcTestSetName)
+    
+    Set objTestSetFactory = objTestSetFolder.TestSetFactory
+    
+    'qcTestSetName = "TestAutomation_" & Format(Now(), "MM-DD-YYYY")
+    
+   'get the test set count for the iteration
+   
+   Set objNewTestSet = objTestSetFolder.FindTestSets(qcTestSetName)
+
+    'if the test set for today's automated tests is not yet existing, create one
+    If objNewTestSet Is Nothing Then
+    
+        'Set objTestSet = objTestSetFolder.FindTestSets(qcTestSetName)
+        
+        Set objNewTestSet = objTestSetFactory.AddItem(Null)
+        objNewTestSet.Name = qcTestSetName
+        objNewTestSet.Post
+    End If
+
+    testSetCount = tdc.TestSetTreeManager.NodeByPath(qcTestSetFolder).TestSetFactory.NewList("").Count
+    
+    For testSetCtr = testSetCount To 1 Step -1
+        Set objNewTestSet = objTestSetFactory.NewList("").Item(testSetCtr)
+        
+        If StrComp(objNewTestSet.Name, qcTestSetName) = 0 Then
+            Set objNewTestSet = objNewTestSet.TSTestFactory
+            Exit For
+        End If
+    Next
+    
+End Function
